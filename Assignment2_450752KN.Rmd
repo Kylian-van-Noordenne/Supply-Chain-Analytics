@@ -1,0 +1,600 @@
+---
+title: "Assignment 2"
+author: "Kylian van Noordenne - 450752"
+date: "April 2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r echo = T, results = 'hide', message= FALSE}
+#install.packages("tseries")
+#install.packages("forecast")
+#install.packages("dplyr")
+#install.packages("readxl)
+#install.packages("openxlsx")
+
+library(tseries)
+library(forecast)
+library(dplyr)
+library(readxl)
+library(openxlsx)
+```
+
+### Preprocess the data
+```{r echo = T, results = 'hide'}
+# Set working directory
+setwd("~/BAM/Supply Chain Analytics/Assignment 2")
+
+# Load data
+ingredients <- read.csv("ingredients.csv")
+menu_items <- read.csv("menu_items.csv")
+menuitem <- read.csv("menuitem.csv")
+portion_uom_types <- read.csv("portion_uom_types.csv")
+pos_ordersale <- read.csv("pos_ordersale.csv")
+recipe_ingredient_assignments <- read.csv("recipe_ingredient_assignments.csv")
+recipe_sub_recipe_assignments <- read.csv("recipe_sub_recipe_assignments.csv")
+recipes <- read.csv("recipes.csv")
+store_restaurant <- read_excel("store_restaurant.xlsx")
+sub_recipe_ingr_assignments <- read.csv("sub_recipe_ingr_assignments.csv")
+sub_recipes <- read.csv("sub_recipes.csv")
+```
+
+### Find the quantity of lettuce for each recipe
+For each recipe, the amount of lettuce used by sub-recipes and corresponding recipes should be found. In the "ingredients" set I found that ingredient number 27 is lettuce.
+
+```{r echo = T, results = 'hide'}
+# all recipes that contain lettuce
+total_lettuce_recipes <- recipe_ingredient_assignments[recipe_ingredient_assignments$IngredientId == 27,c(1,3)]
+total_lettuce_recipes
+```
+At this point all the recipes that contain lettuce are found. Currently, the corresponding sub_recipes should be found.
+
+```{r echo = T, results = 'hide'}
+# Subrecipes containing lettuce
+sub_recipes_lettuce <- sub_recipe_ingr_assignments[sub_recipe_ingr_assignments$IngredientId == 27,]
+sub_recipes_lettuce
+```
+7 subrecipes, contain lettuce (the ingedrientId of 27). The sub_recipes_lecture and recipe_sub_recipe_assignments need to be merged to find the corresponding subrecipes per recipe
+```{r echo = T, results = 'hide'}
+# Recipes containing a sub_recipe where lettuce is present
+subrecipes_lettuce <- inner_join(sub_recipes_lettuce, recipe_sub_recipe_assignments, by = "SubRecipeId")
+subrecipes_lettuce
+```
+Currently, the subrecipes where lettuce is present are defined. However, I do not know how much lettuce is present. This can be derived by  multiplying the quantity times the factor.
+
+```{r echo = T, results = 'hide'}
+subrecipes_lettuce$Quantity <- subrecipes_lettuce$Quantity * subrecipes_lettuce$Factor
+```
+
+A still existing problem is that a recipe can have multiple subrecipes. Aggregating the total recipes based per subrecipe solves the issue.
+
+```{r echo = T, results = 'hide'}
+total_lettuce_subrecipes <- aggregate(cbind(Quantity) ~ RecipeId, sum, data = subrecipes_lettuce)
+total_lettuce_subrecipes
+```
+The files Total_lettuce_recipes & Total_lettuce_subrecipes need to be aggregated for getting the total lettuce per recipe and subrecipe. 
+
+```{r echo = T, results = 'hide'}
+# rbind the datasets
+binded_data <- rbind(total_lettuce_recipes, total_lettuce_subrecipes)
+```
+
+```{r echo = T, results = 'hide'}
+total_lettuce <- aggregate(cbind(Quantity) ~ RecipeId, sum, data = binded_data)
+summary(total_lettuce)
+```
+
+### Find the quantity of lettuce for each store
+The total quantity per recipe are retrieved. However, I still need to find the quantity of lettuce per store. This is done by finding the lettuce per menuitem. 
+
+First, I retrieve the lettuce per menuitem. 
+```{r echo = T, results = 'hide'}
+# I want to inner join two dataframe. However, the naming isn't the same yet. Therefore, I change MenuItemID to Id
+names(menu_items)[4] <- "Id"
+
+# Now I can inner join both dataframe by Id
+menuitem <- inner_join(menuitem, menu_items, by = "Id")
+```
+
+```{r echo = T, results = 'hide'}
+menuitem <- inner_join(menuitem, total_lettuce, by = "RecipeId")
+menuitem
+```
+A Quantity.x and Quantity.y variable is present. These need to be multiplied to obtain the total amount of lettuce per order. 
+
+```{r echo = T, results = 'hide'}
+# Obtain the total quantity. 
+menuitem$total_lettuce <- menuitem$Quantity.x * menuitem$Quantity.y
+```
+Now let's check the stores:
+
+```{r echo = T, results = 'hide'}
+# Check the store restaurant specifications
+store_restaurant
+```
+Store number 46673 and 4904 are the 2 stores in Berkeley, CA. Store number 12631 and 20974 are the stores Ridgewood and Elmhurst, NY. Lettuce per day per sotre: 
+
+```{r echo = T, results = 'hide'}
+# Total lettuce per store number 46673 per day
+store_46673 <- aggregate(cbind(total_lettuce) ~ date, sum,
+                         data = menuitem[menuitem$StoreNumber == 46673, c(15, 21)])
+```
+
+```{r echo = T, results = 'hide'}
+# Total lettuce per store number 4904 per day
+store_4904 <- aggregate(cbind(total_lettuce) ~ date, sum,
+                         data = menuitem[menuitem$StoreNumber == 4904, c(15, 21)])
+```
+
+```{r echo = T, results = 'hide'}
+# Total lettuce per store number 12631 per day
+store_12631 <- aggregate(cbind(total_lettuce) ~ date, sum,
+                         data = menuitem[menuitem$StoreNumber == 12631, c(15, 21)])
+```
+
+```{r echo = T, results = 'hide'}
+# Total lettuce per store number 20974 per day
+store_20974 <- aggregate(cbind(total_lettuce) ~ date, 
+                         sum,
+                         data = menuitem[menuitem$StoreNumber == 20974, c(15, 21)])
+```
+A problem with store 20974 is that the first six results seem wrong. Therefore, I remove those 'outliers' to obtain more accurate results.
+
+```{r echo = T, results = 'hide'}
+# Only use observations 7 up until 94
+store_20974 <- store_20974[c(7:94),]
+store_20974
+```
+A training and test set is created to gather an out-of-sample prediction. The task of the assignment is to create a prediction of two weeks. Therefore, I create a test set of the last 2 weeks in order to (hopefully) pick the best model based on the results of the last 2 weeks. I train on the remaining data. 
+
+```{r echo = T, results = 'hide'}
+# STORE 46673 - Training set (first 82 days) & Test set
+training_46673   <- ts(store_46673[1:89,2], frequency = 7)
+test_46673 <- store_46673[90:nrow(store_46673),2] 
+
+# STORE 4904 - Training set (first 71 days) & Test set
+training_4904   <- ts(store_4904[1:81,2], frequency = 7)
+test_4904 <- store_4904[82:nrow(store_4904),2] 
+
+# STORE 12631 -  Training set (first 89 days) & Test set
+training_12631  <- ts(store_12631[1:89,2], frequency = 7)
+test_12631 <- store_12631[90:nrow(store_12631),2] 
+
+# STORE 20974 - Training set (first 74 days) & Test set
+training_20974   <- ts(store_20974[1:74,2], frequency = 7)
+test_20974 <- store_20974[75:nrow(store_20974),2]
+```
+
+I will elaborate on store 46673 in detail, and I will briefly go over the other three stores (as of the page limitation).
+
+## Forecast Store 46673
+The numerical store variables are transformed to a time series. 
+```{r}
+# Convert to time series
+store_46673 <- ts(store_46673[, 2], frequency = 7, start = c(03, 5))
+```
+
+Let's get more insights into the time series by creating the following plot. The *stl()* function allows us to visually inspect the created time series.
+```{r fig.height= 3.8}
+plot(stl(store_46673, s.window = "period"))
+```
+The plot above shows the original time series at top, followed by the estimated seasonal component (second from top), following the estimated trend component and at the bottom the estimated irregular component. The smaller the gray bar on the right, the more important that specific component. Seasonality seems to be present and plays a role. Trend does not seems to be present and is not important as of the large gray bar.
+
+### Holt-Winters model
+Let's perform the HoltWinters function to find the parameters that lead to the minimum error
+
+```{r warning=FALSE, echo = T, results = 'hide'}
+# Parameter estimation
+HW_store_46673 <- HoltWinters(training_46673) 
+HW_store_46673
+```
+The estimated alpha parameter is about 0.06. As this is pretty close to zero, it implies that more weight is placed on recent observations, but this is marginally. The beta is zero as there is no trend. The gamma,  the coefficient for the seasonal smoothing, is 0.35.  
+
+Now let's create an Exponential smoothing (ETS) model as well:
+
+```{r warning=FALSE, echo = T, results = 'hide'}
+ETS_store_46673 <- ets(training_46673, model = "ZZZ")   
+ETS_store_46673
+```
+The first letter is the error type, the second letter the trend type and the third letter denotes the season type. "N" means none, "A" means additive and "M" means multiplicative. In this case there is a A, N, A model. It means that there is no trend, but there is seasonality.
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_46673_HW <- forecast(HW_store_46673, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_46673_ETS <- forecast(ETS_store_46673, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide", warning=FALSE}
+# Check the model fit
+checkresiduals(forecast_46673_ETS)
+checkresiduals(forecast_46673_HW)
+```
+There is one lag in the ETS model where the confidence interval is exceeded. Nevertheless, this is not the case for the HW model and both models show a normal distribution in the residuals. Therefore, I do not see major warning signals. What is a warning signal, is that the Ljung-box p-value is < 0.05. This implies that we cannot assume that the values are dependent.
+
+### ARIMA
+Check for stationarity
+
+```{r warning=FALSE, echo = T, results = 'hide'}
+# ADF test
+adf.test(store_46673)
+```
+Assuming a p-value of 0.05: Our found P-value < 0.05. Therefore, the null hypothesis is rejected and it is highly likely that the time series is stationary. 
+
+```{r warning=FALSE, echo = T, results = 'hide'}
+# PP test
+pp.test(store_46673)
+```
+
+Assuming a p-value of 0.05: Our found P-value < 0.05. Therefore, the null hypothesis is rejected and it is highly likely that the time series is stationary. 
+
+```{r warning=FALSE, echo = T, results = 'hide'}
+# KPSS test
+kpss.test(store_46673)
+```
+Assuming a p-value of 0.05 is used: Our found P-value > 0.05. Therefore, the alternative hypothesis is rejected and it is proposed that it is highly likely that the time series is stationary. 
+ 
+Differencing is not needed as the time series are stationary. This is also confirmed if we use the ndiffs function:
+
+```{r warning=FALSE, echo = T, results = 'hide'}
+ndiffs(store_46673)
+```
+
+```{r }
+# Determine ARIMA parameters
+auto.arima(training_46673, ic = c('bic'), trace = TRUE)
+```
+ARIMA(0,0,0)(0,1,1) with a period of 7 is the best performing model, closely followed by ARIMA(0,0,1)(0,1,1)[7]. These two specification are assigned to the Arima models. I used two Arima models as the differences in BIC is that marginal, that I cannot fully confirm that one Arima models outperforms the other Arima models. Therefore, I used the two best performing model based on the BIC value. 
+
+```{r}
+# Create the models
+model_store_46673_1 <- Arima(training_46673, order = c(0, 0, 0),
+                           seasonal = list(order = c(0, 1, 1), period = 7))
+
+model_store_46673_2 <- Arima(training_46673, order = c(0, 0, 1),
+                           seasonal = list(order = c(0, 1, 1), period = 7))
+```
+
+The trained models will be used for gathering a 14 day forecast, as the test set is 14 days as well.  
+ 
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Forecast the models
+forecast_store_46673_1 <- forecast(model_store_46673_1, h = 14)
+forecast_store_46673_2 <- forecast(model_store_46673_2, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide", warning=FALSE}
+# Check the model fit
+checkresiduals(forecast_store_46673_1)
+checkresiduals(forecast_store_46673_2)
+```
+
+Residuals are normally divided, but 2 lags tend to be slightly out of the confidence interval. It is not a huge problem, but it might be useful to keep in mind. The Ljung-Box test shows a p-value of 0.0047 and 0.248. Within one model, it is likely that there is a lack of fit, while the other second Arima model is likely to fit well.  
+
+### Performance comparison: store 46673
+
+The out-of-sample performance is evaluated to compare the performance of the models. The mean squared error is the criteria where our 2 week ahead prediction is judged on. Therefore, I will look another error metrics, but my decision is based on the lowest RMSE test set result. I mainly consider the test set, as this provides the predictory power of the model, rather then tells me how well my model fits the data. 
+
+```{r}
+# Testing the models
+accuracy(forecast_store_46673_1, test_46673) #ARIMA1
+accuracy(forecast_store_46673_2, test_46673) #ARIMA2
+```
+The second Arima model seems to perform better in training set as well as the out-of-sample performance as the RMSE error is lower. This confirms my initial thought that I cannot fully confirm that the Arima model with the lowest BIC value will outperform the other Arima models. 
+
+```{r}
+# Testing the models 
+accuracy(forecast_46673_HW, test_46673) #HW
+accuracy(forecast_46673_ETS, test_46673) #ETS
+```
+I gathered the error metrics for both models. Initially, I found that the ETS model, based on the test set results, outperformed the HW model. Further, I found that my second ARIMA model had a better performance than my first ARIMA model. Moreover, I found that the ETS model outperformed the ARIMA models as well. I decided to use the ETS model as most criteria, and especially the squared deviation error, showed a lower error. Certain error metrics, such as the ME and MPE are in favor of the utilization of the Arima model. Yet, as stated, the RMSE is the most important metric and is the lowest for the out-of-sample ETS model. 
+
+Let's now use the full ETS model to predict for the next 14 days. In this case, all the data is used rather than just the training data. 
+
+```{r echo = T, results = 'hide', message= FALSE}
+store_46673_ETS <- ets(store_46673, model = "ZZZ")
+store_46673_ETS
+```
+The model is now trained on all the data. As of now, I will forecast 14 unknown days ahead to retrieve our first forecast. 
+```{r} 
+# Predict the next 14 days
+future_predictions_46673 <- forecast(store_46673_ETS, h = 14)
+future_predictions_46673
+```
+
+```{r fig.width= 5, fig.height= 3}
+plot(future_predictions_46673, xlab = "Time spawn", ylab = "Lettuce sales")
+```
+
+## Forecast: Other stores
+As of the page limit, I will combine the three other stores and not display many plots. I did check and investigate the output, but I will not display most of it. 
+
+### Holt-Winters model
+```{r}
+# Convert to time series
+store_4904 <- ts(store_4904[, 2], frequency = 7, start = c(03, 13))
+store_12631 <- ts(store_12631[, 2], frequency = 7, start = c(03, 20))
+store_20974 <- ts(store_20974[, 2], frequency = 7, start = c(03, 5))
+```
+
+```{r echo = T, results = 'hide', fig.show="hide"}
+# Plot the time series
+plot(stl(store_4904, s.window = "period"))
+plot(stl(store_12631, s.window = "period"))
+plot(stl(store_20974, s.window = "period"))
+```
+
+All models tend to show seasonality, but a trend cannot be observed. 
+```{r echo = T, results = 'hide', message= FALSE}
+# Parameter estimation of the stores
+training_4904_HW <- HoltWinters(training_4904) 
+training_12631_HW <- HoltWinters(training_12631) 
+training_20974_HW <- HoltWinters(training_20974) 
+```
+
+```{r echo = T, results = 'hide', message= FALSE}
+training_4904_ETS <- ets(training_4904, model = "ZZZ")   
+training_12631_ETS <- ets(training_12631, model = "ZZZ")   
+training_20974_ETS <- ets(training_20974, model = "ZZZ")   
+```
+ETS_store_4904: A,N,A model - ETS_store_12631: M,Ad,M model - ETS_store_20974: A,N,A model.
+
+Let's train on the training set.
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_4904_HW <- forecast(training_4904_HW, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_12631_HW <- forecast(training_12631_HW, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 21 days based on the forecast
+forecast_20974_HW <- forecast(training_20974_HW, h = 14)
+```
+
+Now let's also train and plot the ETS forecasts for the stores: 
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_4904_ETS <- forecast(training_4904_ETS, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_12631_ETS <- forecast(training_12631_ETS, h = 14)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+# Predict the next 14 days based on the forecast
+forecast_20974_ETS <- forecast(training_20974_ETS, h = 14)
+```
+
+Investigate the residuals of our models
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide", warning=FALSE}
+# Examine model fit
+checkresiduals(forecast_4904_ETS)
+checkresiduals(forecast_4904_HW)
+```
+Ljung-box p-value < 0.05, so I cannot assume that the values are dependent. The plots do not show warning signals as the residuals are normally distributed and the lags of both models are within the confidence intervals. 
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide", warning=FALSE}
+# Examine model fit
+checkresiduals(forecast_12631_ETS)
+checkresiduals(forecast_12631_HW)
+```
+Ljung-box p-value < 0.05, so I cannot assume that the values are dependent. This is a warning signal. The plots do not show warning signals as the residuals are normally distributed and the lags of both models are within the confidence intervals. 
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide", warning=FALSE}
+# Examine model fit
+checkresiduals(forecast_20974_ETS)
+checkresiduals(forecast_20974_HW)
+```
+Ljung-box p-value < 0.05, so I cannot assume that the values are dependent. This is a warning signal. The plots do not show warning signals as the residuals are normally distributed and the lags of both models are within the confidence intervals. 
+
+### ARIMA for all stores
+```{r echo = T, results = 'hide', message= FALSE, warning=FALSE}
+# ADF test
+adf.test(store_4904)
+adf.test(store_12631)
+adf.test(store_20974)
+```
+Assuming a p-value of 0.05 is used: the found P-value is < 0.05. Therefore, the null hypothesis is rejected and it is proposed that it is highly likely that the time series is stationary. 
+
+```{r echo = T, results = 'hide', message= FALSE, warning=FALSE}
+# PP test
+pp.test(store_4904)
+pp.test(store_12631)
+pp.test(store_20974)
+```
+Assuming a p-value of 0.05 is used: the found P-value is < 0.05. Therefore, the null hypothesis is rejected and it is proposed that it is highly likely that the time series is stationary. 
+
+```{r echo = T, results = 'hide', message= FALSE, warning=FALSE}
+# KPSS test
+kpss.test(store_4904)
+kpss.test(store_12631)
+kpss.test(store_20974)
+```
+Assuming a p-value of 0.05 is used: the found P-value is > 0.05. Therefore, the alternative hypothesis is rejected and it is proposed that it is highly likely that the time series is stationary for store 4904 and 20974.  
+ 
+Differencing is not needed for store 4904 and store 20974 as the time series are stationary. This is also confirmed if the  ndiffs function is applied:
+
+```{r echo = T, results = 'hide', message= FALSE}
+ndiffs(store_4904)
+ndiffs(store_20974)
+```
+
+However, if I check store 12631, a ndiffs of 1 is found:
+```{r echo = T, results = 'hide', message= FALSE}
+ndiffs(store_12631)
+```
+The Arima model should tackle this problem. The test set result is the exact same when applying the differences of 1 (d = 1).
+
+```{r echo = T, results = 'hide', message= FALSE}
+# ARIMA store 4904
+auto.arima(training_4904, ic = c('bic'), trace = TRUE)
+```
+ARIMA(0,0,0)(2,1,0)[7] with a period of 7 is the best performing models. Closely followed by ARIMA(1,0,1)(2,1,0)[7]. These two specifications are assigned to the Arima training models.
+
+```{r echo = T, results = 'hide', message= FALSE}
+# Create the models
+model_store_4904_1 <- Arima(training_4904, order = c(0, 0, 0),
+                           seasonal = list(order = c(2, 1, 0), period = 7))
+
+model_store_4904_2 <- Arima(training_4904, order = c(1, 0, 1),
+                           seasonal = list(order = c(2, 1, 0), period = 7))
+```
+
+```{r echo = T, results = 'hide', message= FALSE}
+# ARIMA store 12631
+auto.arima(training_12631, ic = c('bic'), trace = TRUE)
+```
+ARIMA(0,1,1)(2,0,0) with a period of 7 is the best performing models. closely followed by ARIMA(1,1,1)(1,0,0)[7]. These two specifications are assigned to the Arima training models.
+
+```{r echo = T, results = 'hide', message= FALSE}
+# Create the models
+model_store_12631_1 <- Arima(training_12631, order = c(0, 1, 1),
+                           seasonal = list(order = c(2, 0, 0), period = 7))
+
+model_store_12631_2 <- Arima(training_12631, order = c(1, 1, 1),
+                           seasonal = list(order = c(1, 0, 0), period = 7))
+```
+
+Lastly, I create the model for store 20974.
+```{r echo = T, results = 'hide', message= FALSE}
+# ARIMA store 20974
+auto.arima(training_20974, ic = c('bic'), trace = TRUE)
+```
+ARIMA(1,0,0)(1,0,0)[7] with a period of 7 is the best performing models. closely followed by  ARIMA(0,0,1)(1,0,0)[7]. These two specifications are assigned to the Arima training models.
+
+```{r echo = T, results = 'hide', message= FALSE}
+# Create the models
+model_store_20974_1 <- Arima(training_20974, order = c(1, 0, 0),
+                           seasonal = list(order = c(1, 0, 0), period = 7))
+
+model_store_20974_2 <- Arima(training_20974, order = c(0, 0, 1),
+                           seasonal = list(order = c(1, 0, 0), period = 7))
+```
+
+I will now forecast the ARIMA models.
+```{r echo = T, results = 'hide', message= FALSE}
+# ARIMA forecast store 4904
+forecast_store_4904_1 <- forecast(model_store_4904_1, h = 14)
+forecast_store_4904_2 <- forecast(model_store_4904_2, h = 14)
+
+# ARIMA forecast store 12631
+forecast_store_12631_1 <- forecast(model_store_12631_1, h = 14)
+forecast_store_12631_2 <- forecast(model_store_12631_2, h = 14)
+
+# ARIMA forecast store 20974
+forecast_store_20974_1 <- forecast(model_store_20974_1, h = 14)
+forecast_store_20974_2 <- forecast(model_store_20974_2, h = 14)
+```
+
+## Performance comparison other stores
+At this point, all training sets are trained and I can compare the performance based on a prediction of the training set on the test set. I will assess the performance per store. Again, the main criteria will be the test set RMSE metric, as I want to assess the predictory power based on the mean squared deviation. 
+
+### Performance comparison: Store 4904
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+accuracy(forecast_store_4904_1, test_4904) #ARIMA1
+accuracy(forecast_store_4904_2, test_4904) #ARIMA2
+
+accuracy(forecast_4904_HW, test_4904) # HW
+accuracy(forecast_4904_ETS, test_4904) #ETS
+```
+The ARIMA outperformed the HW model and the ETS model, based on the RMSE criteria. Therefore, I propose the utilization of the ARIMA model. 
+
+```{r echo = T, results = 'hide', message= FALSE}
+# Train a new model based on all data
+store_4904_ARIMA <- Arima(store_4904, order = c(0, 0, 0),
+                           seasonal = list(order = c(2, 1, 0), period = 7))
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"} 
+# Predict the next 14 days
+future_predictions_4904 <- forecast(store_4904_ARIMA, h = 14)
+```
+
+```{r fig.width= 5, fig.height=3}
+# Plot future predictions
+plot(future_predictions_4904, xlab = "Time spawn", ylab = "Lettuce sales")
+```
+
+### Performance comparison: Store 12631
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+accuracy(forecast_store_12631_1, test_12631) #ARIMA1
+accuracy(forecast_store_12631_2, test_12631) #ARIMA2
+
+accuracy(forecast_12631_HW, test_12631) # HW
+accuracy(forecast_12631_ETS, test_12631) #ETS
+```
+The HW outperformed the ETS model, as well as the ARIMA models, based the most important error criteria (RMSE). Therefore, I propose the utilization of the HW model. I will now train the model on all the data and predict the next 14 days.
+
+```{r echo = T, results = 'hide', message= FALSE}
+HW_store_12631 <- HoltWinters(store_12631)
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"} 
+# Predict the next 14 days
+future_predictions_12631 <- forecast(HW_store_12631, h = 14)
+```
+
+```{r fig.height= 3, fig.width= 5 }
+plot(future_predictions_12631, xlab = "Time span", ylab = "Lettuce sales")
+```
+
+### Performance comparison: Store 20974
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide"}
+accuracy(forecast_store_20974_1, test_20974) #ARIMA1
+accuracy(forecast_store_20974_2, test_20974) #ARIMA2
+
+accuracy(forecast_20974_HW, test_20974) # HW
+accuracy(forecast_20974_ETS, test_20974) #ETS
+```
+The second ARIMA model outperformed the first ARIMA model, as well as the HW and ETS models, based on all error criteria. This finding is again confirming my thought that the BIC is not determining the best performance. I propose the utilization of the second ARIMA model, as the out-of-sample errors are the lowest. 
+
+```{r echo = T, results = 'hide', message= FALSE}
+# Train a new model based on all data
+store_20974_ARIMA <- Arima(store_20974, order = c(0, 0, 1),
+                           seasonal = list(order = c(1, 0, 0), period = 7))
+```
+
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide" } 
+# Predict the next 14 days
+future_predictions_20974 <- forecast(store_20974_ARIMA, h = 14)
+```
+
+```{r fig.height= 3, fig.width= 5 }
+plot(future_predictions_20974, xlab = "Time span", ylab = "Lettuce sales")
+```
+
+## Forecasts for all stores
+```{r echo = T, results = 'hide', message= FALSE, fig.show="hide" }
+# Assign predictions to dataframe
+final_predictions <- as.data.frame(future_predictions_46673$mean)
+final_predictions$store_4904 <- future_predictions_4904$mean
+final_predictions$store_12631 <- future_predictions_12631$mean
+final_predictions$store_20974 <- future_predictions_20974$mean
+
+#Change column name
+names(final_predictions)[1] <- "store_46673"
+
+# Display all predictions
+final_predictions
+```
+Let's save all the final predictions into a csv file.
+
+```{r}
+write.csv(final_predictions, "Predictions submission 450752KN.csv")
+```
+
+
+
+
+
